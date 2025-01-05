@@ -1,12 +1,10 @@
-version: "2"
-
 services:
   web:
     image: web
     expose:
       - "80"
     environment:
-      WEB_PORTS: 80
+      WEB_PORTS: "80"
       VIRTUAL_HOST: web.nginx-proxy.tld
 
   web-server-tokens-off:
@@ -14,11 +12,6 @@ services:
     expose:
       - "80"
     environment:
-      WEB_PORTS: 80
+      WEB_PORTS: "80"
       VIRTUAL_HOST: web-server-tokens-off.nginx-proxy.tld
       SERVER_TOKENS: "off"
-
-  sut:
-    image: nginxproxy/nginx-proxy:test
-    volumes:
-      - /var/run/docker.sock:/tmp/docker.sock:ro

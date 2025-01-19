@@ -25,16 +25,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.9
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: 3.9
+          python-version: 3.12
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r python-requirements.txt
         working-directory: test/requirements
+
+      - name: Pull nginx:alpine image
+        run: docker pull nginx:alpine
 
       - name: Build Docker web server image
         run: make build-webserver

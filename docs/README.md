@@ -11,6 +11,7 @@
 - [HTTP/2 and HTTP/3](#http2-and-http3)
 - [Headers](#headers)
 - [Custom Nginx Configuration](#custom-nginx-configuration)
+- [TCP and UDP stream](#tcp-and-udp-stream)
 - [Unhashed vs SHA1 upstream names](#unhashed-vs-sha1-upstream-names)
 - [Separate Containers](#separate-containers)
 - [Docker Compose](#docker-compose)
@@ -53,6 +54,110 @@ For each host defined into `VIRTUAL_HOST`, the associated virtual port is retrie
 1. From the container's exposed port if there is only one
 1. From the default port 80 when none of the above methods apply
 
+### Multiple ports
+
+If your container expose more than one service on different ports and those services need to be proxied, you'll need to use the `VIRTUAL_HOST_MULTIPORTS` environment variable. This variable takes virtual host, path, port and dest definition in YAML (or JSON) form, and completely override the `VIRTUAL_HOST`, `VIRTUAL_PORT`, `VIRTUAL_PROTO`, `VIRTUAL_PATH` and `VIRTUAL_DEST` environment variables on this container.
+
+The YAML syntax should be easier to write on Docker compose files, while the JSON syntax can be used for CLI invocation.
+
+The expected format is the following:
+
+```yaml
+hostname:
+  path:
+    port: int
+    proto: string
+    dest: string
+```
+
+For each hostname entry, `path`, `port`, `proto` and `dest` are optional and are assigned default values when missing:
+
+- `path` = "/"
+- `port` = default port
+- `proto` = "http"
+- `dest` = ""
+
+#### Multiple ports routed to different hostnames
+
+The following example use an hypothetical container running services over HTTP on port 80, 8000 and 9000:
+
+```yaml
+services:
+  multiport-container:
+    image: somerepo/somecontainer
+    container_name: multiport-container
+    environment:
+      VIRTUAL_HOST_MULTIPORTS: |-
+        www.example.org:
+        service1.example.org:
+          "/":
+            port: 8000
+        service2.example.org:
+          "/":
+            port: 9000
+
+# There is no path dict specified for www.example.org, so it get the default values:
+# www.example.org:
+#   "/":
+#     port: 80 (default port)
+#     dest: ""
+
+# JSON equivalent:
+#     VIRTUAL_HOST_MULTIPORTS: |-
+#       {
+#         "www.example.org": {},
+#         "service1.example.org": { "/": { "port": 8000, "dest": "" } },
+#         "service2.example.org": { "/": { "port": 9000, "dest": "" } }
+#       }
+```
+
+This would result in the following proxy config:
+
+- `www.example.org` -> `multiport-container:80` over `HTTP`
+- `service1.example.org` -> `multiport-container:8000` over `HTTP`
+- `service2.example.org` -> `multiport-container:9000` over `HTTP`
+
+#### Multiple ports routed to same hostname and different paths
+
+The following example use an hypothetical container running services over HTTP on port 80 and 8000 and over HTTPS on port 9443:
+
+```yaml
+services:
+  multiport-container:
+    image: somerepo/somecontainer
+    container_name: multiport-container
+    environment:
+      VIRTUAL_HOST_MULTIPORTS: |-
+        www.example.org:
+          "/":
+          "/service1":
+            port: 8000
+            dest: "/"
+          "/service2":
+            port: 9443
+            proto: "https"
+            dest: "/"
+
+# port and dest are not specified on the / path, so this path is routed to the
+# default port with the default dest value (empty string) and default proto (http)
+
+# JSON equivalent:
+#     VIRTUAL_HOST_MULTIPORTS: |-
+#       {
+#         "www.example.org": {
+#           "/": {},
+#           "/service1": { "port": 8000, "dest": "/" },
+#           "/service2": { "port": 9443, "proto": "https", "dest": "/" }
+#         }
+#       }
+```
+
+This would result in the following proxy config:
+
+- `www.example.org` -> `multiport-container:80` over `HTTP`
+- `www.example.org/service1` -> `multiport-container:8000` over `HTTP`
+- `www.example.org/service2` -> `multiport-container:9443` over `HTTPS`
+
 ⬆️ [back to table of contents](#table-of-contents)
 
 ## Path-based Routing
@@ -62,7 +167,8 @@ It is also possible to specify multiple paths with regex locations like `VIRTUAL
 
 The full request URI will be forwarded to the serving container in the `X-Original-URI` header.
 
-**NOTE**: Your application needs to be able to generate links starting with `VIRTUAL_PATH`. This can be achieved by it being natively on this path or having an option to prepend this path. The application does not need to expect this path in the request.
+> [!NOTE]
+> Your application needs to be able to generate links starting with `VIRTUAL_PATH`. This can be achieved by it being natively on this path or having an option to prepend this path. The application does not need to expect this path in the request.
 
 ### VIRTUAL_DEST
 
@@ -81,8 +187,9 @@ In this example, the incoming request `http://example.tld/app1/foo` will be prox
 ### Per-VIRTUAL_PATH location configuration
 
 The same options as from [Per-VIRTUAL_HOST location configuration](#Per-VIRTUAL_HOST-location-configuration) are available on a `VIRTUAL_PATH` basis.
-The only difference is that the filename gets an additional block `HASH=$(echo -n $VIRTUAL_PATH | sha1sum | awk '{ print $1 }')`. This is the sha1-hash of the `VIRTUAL_PATH` (no newline). This is done filename sanitization purposes.
-The used filename is `${VIRTUAL_HOST}_${HASH}_location`
+The only difference is that the filename gets an additional block `HASH=$(echo -n $VIRTUAL_PATH | sha1sum | awk '{ print $1 }')`. This is the sha1-hash of the `VIRTUAL_PATH` (no newline). This is done for filename sanitization purposes.
+
+The used filename is `${VIRTUAL_HOST}_${PATH_HASH}_location`, or when `VIRTUAL_HOST` is a regex, `${VIRTUAL_HOST_HASH}_${PATH_HASH}_location`.
 
 The filename of the previous example would be `example.tld_8610f6c344b4096614eab6e09d58885349f42faf_location`.
 
@@ -141,7 +248,7 @@ Proxyed containers running in host network mode **must** use the [`VIRTUAL_PORT`
 
 If you allow traffic from the public internet to access your `nginx-proxy` container, you may want to restrict some containers to the internal network only, so they cannot be accessed from the public internet. On containers that should be restricted to the internal network, you should set the environment variable `NETWORK_ACCESS=internal`. By default, the _internal_ network is defined as `127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16`. To change the list of networks considered internal, mount a file on the `nginx-proxy` at `/etc/nginx/network_internal.conf` with these contents, edited to suit your needs:
 
-```Nginx
+```nginx
 # These networks are considered "internal"
 allow 127.0.0.0/8;
 allow 10.0.0.0/8;
@@ -154,6 +261,7 @@ deny all;
 
 When internal-only access is enabled, external clients will be denied with an `HTTP 403 Forbidden`
 
+> [!NOTE]
 > If there is a load-balancer / reverse proxy in front of `nginx-proxy` that hides the client IP (example: AWS Application/Elastic Load Balancer), you will need to use the nginx `realip` module (already installed) to extract the client's IP from the HTTP request headers. Please see the [nginx realip module configuration](http://nginx.org/en/docs/http/ngx_http_realip_module.html) for more details. This configuration can be added to a new config file and mounted in `/etc/nginx/conf.d/`.
 
 ⬆️ [back to table of contents](#table-of-contents)
@@ -164,7 +272,8 @@ When internal-only access is enabled, external clients will be denied with an `H
 
 If you would like the reverse proxy to connect to your backend using HTTPS instead of HTTP, set `VIRTUAL_PROTO=https` on the backend container.
 
-> Note: If you use `VIRTUAL_PROTO=https` and your backend container exposes port 80 and 443, `nginx-proxy` will use HTTPS on port 80. This is almost certainly not what you want, so you should also include `VIRTUAL_PORT=443`.
+> [!NOTE]
+> If you use `VIRTUAL_PROTO=https` and your backend container exposes port 80 and 443, `nginx-proxy` will use HTTPS on port 80. This is almost certainly not what you want, so you should also include `VIRTUAL_PORT=443`.
 
 ### uWSGI Upstream
 
@@ -180,12 +289,9 @@ If you use fastcgi,you can set `VIRTUAL_ROOT=xxx` for your root directory
 
 ### Upstream Server HTTP Load Balancing Support
 
-> **Warning**
-> This feature is experimental. The behavior may change (or the feature may be removed entirely) without warning in a future release, even if the release is not a new major version. If you use this feature, or if you would like to use this feature but you require changes to it first, please [provide feedback in #2195](https://github.com/nginx-proxy/nginx-proxy/discussions/2195). Once we have collected enough feedback we will promote this feature to officially supported.
-
 If you have multiple containers with the same `VIRTUAL_HOST` and `VIRTUAL_PATH` settings, nginx will spread the load across all of them. To change the load balancing algorithm from nginx's default (round-robin), set the `com.github.nginx-proxy.nginx-proxy.loadbalance` label on one or more of your application containers to the desired load balancing directive. See the [`ngx_http_upstream_module` documentation](https://nginx.org/en/docs/http/ngx_http_upstream_module.html) for available directives.
 
-> **Note**
+> [!NOTE]
 >
 > - Don't forget the terminating semicolon (`;`).
 > - If you are using Docker Compose, remember to escape any dollar sign (`$`) characters (`$` becomes `$$`).
@@ -202,6 +308,7 @@ services:
       - /var/run/docker.sock:/tmp/docker.sock:ro
     environment:
       HTTPS_METHOD: nohttps
+
   myapp:
     image: jwilder/whoami
     expose:
@@ -217,10 +324,7 @@ services:
 
 ### Upstream Server HTTP Keep-Alive Support
 
-> **Warning**
-> This feature is experimental. The behavior may change (or the feature may be removed entirely) without warning in a future release, even if the release is not a new major version. If you use this feature, or if you would like to use this feature but you require changes to it first, please [provide feedback in #2194](https://github.com/nginx-proxy/nginx-proxy/discussions/2194). Once we have collected enough feedback we will promote this feature to officially supported.
-
-To enable HTTP keep-alive between `nginx-proxy` and backend server(s), set the `com.github.nginx-proxy.nginx-proxy.keepalive` label on the server's container either to `auto` or to the desired maximum number of idle connections. The `auto` setting will dynamically set the maximum number of idle connections to twice the number of servers listed in the corresponding `upstream{}` block, [per nginx recommendation](https://www.nginx.com/blog/avoiding-top-10-nginx-configuration-mistakes/#no-keepalives).
+By default `nginx-proxy` will enable HTTP keep-alive between itself and backend server(s) and set the maximum number of idle connections to twice the number of servers listed in the corresponding `upstream{}` block, [per nginx recommendation](https://www.nginx.com/blog/avoiding-top-10-nginx-configuration-mistakes/#no-keepalives). To manually set the maximum number of idle connections or disable HTTP keep-alive entirely, use the `com.github.nginx-proxy.nginx-proxy.keepalive` label on the server's container (setting it to `disabled` will disable HTTP keep-alive).
 
 See the [nginx keepalive documentation](https://nginx.org/en/docs/http/ngx_http_upstream_module.html#keepalive) and the [Docker label documentation](https://docs.docker.com/config/labels-custom-metadata/) for details.
 
@@ -228,7 +332,7 @@ See the [nginx keepalive documentation](https://nginx.org/en/docs/http/ngx_http_
 
 ## Basic Authentication Support
 
-In order to be able to secure your virtual host, you have to create a file named as its equivalent `VIRTUAL_HOST` variable in directory
+In order to be able to secure your virtual host, you have to create a file named as its equivalent `VIRTUAL_HOST` variable (or if using a regex `VIRTUAL_HOST`, as the sha1 hash of the regex) in directory
 `/etc/nginx/htpasswd/{$VIRTUAL_HOST}`
 
 ```console
@@ -305,7 +409,7 @@ docker run --detach \
 
 ## SSL Support
 
-SSL is supported using single host, wildcard and SNI certificates using naming conventions for certificates or optionally specifying a cert name (for SNI) as an environment variable.
+SSL is supported using single host, wildcard and SAN certificates using naming conventions for certificates or optionally [specifying a cert name as an environment variable](#san-certificates).
 
 To enable SSL:
 
@@ -321,13 +425,20 @@ If you are running the container in a virtualized environment (Hyper-V, VirtualB
 
 [acme-companion](https://github.com/nginx-proxy/acme-companion) is a lightweight companion container for the nginx-proxy. It allows the automated creation/renewal of SSL certificates using the ACME protocol.
 
+By default nginx-proxy generates location blocks to handle ACME HTTP Challenge. This behavior can be changed with environment variable `ACME_HTTP_CHALLENGE_LOCATION`. It accepts these values:
+
+- `true`: default behavior, handle ACME HTTP Challenge in all cases.
+- `false`: do not handle ACME HTTP Challenge at all.
+- `legacy`: legacy behavior for compatibility with older (<= `2.3`) versions of acme-companion, only handle ACME HTTP challenge when there is a certificate for the domain and `HTTPS_METHOD=redirect`.
+
 ### Diffie-Hellman Groups
 
 [RFC7919 groups](https://datatracker.ietf.org/doc/html/rfc7919#appendix-A) with key lengths of 2048, 3072, and 4096 bits are [provided by `nginx-proxy`](https://github.com/nginx-proxy/nginx-proxy/dhparam). The ENV `DHPARAM_BITS` can be set to `2048` or `3072` to change from the default 4096-bit key. The DH key file will be located in the container at `/etc/nginx/dhparam/dhparam.pem`. Mounting a different `dhparam.pem` file at that location will override the RFC7919 key.
 
 To use custom `dhparam.pem` files per-virtual-host, the files should be named after the virtual host with a `dhparam` suffix and `.pem` extension. For example, a container with `VIRTUAL_HOST=foo.bar.com` should have a `foo.bar.com.dhparam.pem` file in the `/etc/nginx/certs` directory.
 
-> COMPATIBILITY WARNING: The default generated `dhparam.pem` key is 4096 bits for A+ security. Some older clients (like Java 6 and 7) do not support DH keys with over 1024 bits. In order to support these clients, you must provide your own `dhparam.pem`.
+> [!WARNING]
+> The default generated `dhparam.pem` key is 4096 bits for A+ security. Some older clients (like Java 6 and 7) do not support DH keys with over 1024 bits. In order to support these clients, you must provide your own `dhparam.pem`.
 
 In the separate container setup, no pre-generated key will be available and neither the [nginxproxy/docker-gen](https://hub.docker.com/r/nginxproxy/docker-gen) image, nor the offical [nginx](https://registry.hub.docker.com/_/nginx/) image will provide one. If you still want A+ security in a separate container setup, you should mount an RFC7919 DH key file to the nginx container at `/etc/nginx/dhparam/dhparam.pem`.
 
@@ -339,9 +450,12 @@ docker run -e DHPARAM_SKIP=true ....
 
 ### Wildcard Certificates
 
-Wildcard certificates and keys should be named after the domain name with a `.crt` and `.key` extension. For example `VIRTUAL_HOST=foo.bar.com` would use cert name `bar.com.crt` and `bar.com.key`.
+Wildcard certificates and keys should be named after the parent domain name with a `.crt` and `.key` extension. For example:
 
-### SNI
+- `VIRTUAL_HOST=foo.bar.com` would use cert name `bar.com.crt` and `bar.com.key` if `foo.bar.com.crt` and `foo.bar.com.key` are not available
+- `VIRTUAL_HOST=sub.foo.bar.com` use cert name `foo.bar.com.crt` and `foo.bar.com.key` if `sub.foo.bar.com.crt` and `sub.foo.bar.com.key` are not available, but won't use `bar.com.crt` and `bar.com.key`.
+
+### SAN Certificates
 
 If your certificate(s) supports multiple domain names, you can start a container with `CERT_NAME=<name>` to identify the certificate to be used. For example, a certificate for `*.foo.com` and `*.bar.com` could be named `shared.crt` and `shared.key`. A container running with `VIRTUAL_HOST=foo.bar.com` and `CERT_NAME=shared` will then use this shared cert.
 
@@ -353,7 +467,10 @@ To enable OCSP Stapling for a domain, `nginx-proxy` looks for a PEM certificate 
 
 The default SSL cipher configuration is based on the [Mozilla intermediate profile](https://wiki.mozilla.org/Security/Server_Side_TLS#Intermediate_compatibility_.28recommended.29) version 5.0 which should provide compatibility with clients back to Firefox 27, Android 4.4.2, Chrome 31, Edge, IE 11 on Windows 7, Java 8u31, OpenSSL 1.0.1, Opera 20, and Safari 9. Note that the DES-based TLS ciphers were removed for security. The configuration also enables HSTS, PFS, OCSP stapling and SSL session caches. Currently TLS 1.2 and 1.3 are supported.
 
-If you don't require backward compatibility, you can use the [Mozilla modern profile](https://wiki.mozilla.org/Security/Server_Side_TLS#Modern_compatibility) profile instead by including the environment variable `SSL_POLICY=Mozilla-Modern` to the nginx-proxy container or to your container. This profile is compatible with clients back to Firefox 63, Android 10.0, Chrome 70, Edge 75, Java 11, OpenSSL 1.1.1, Opera 57, and Safari 12.1. Note that this profile is **not** compatible with any version of Internet Explorer.
+If you don't require backward compatibility, you can use the [Mozilla modern profile](https://wiki.mozilla.org/Security/Server_Side_TLS#Modern_compatibility) profile instead by including the environment variable `SSL_POLICY=Mozilla-Modern` to the nginx-proxy container or to your container. This profile is compatible with clients back to Firefox 63, Android 10.0, Chrome 70, Edge 75, Java 11, OpenSSL 1.1.1, Opera 57, and Safari 12.1.
+
+> [!NOTE]
+> This profile is **not** compatible with any version of Internet Explorer.
 
 Complete list of policies available through the `SSL_POLICY` environment variable, including the [AWS ELB Security Policies](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/create-https-listener.html#describe-ssl-policies) and [AWS Classic ELB security policies](https://docs.aws.amazon.com/fr_fr/elasticloadbalancing/latest/classic/elb-security-policy-table.html):
 
@@ -374,6 +491,7 @@ Complete list of policies available through the `SSL_POLICY` environment variabl
       <a href="https://wiki.mozilla.org/Security/Server_Side_TLS#Old_backward_compatibility" target="_blank">
         <code>Mozilla-Old</code>
       </a>
+      (this policy should use a 1024 bits DH key for compatibility but this container provides a 4096 bits key. The <a href="#diffie-hellman-groups">Diffie-Hellman Groups</a> section details different methods of bypassing this, either globally or per virtual-host.)
     </li>
   </ul>
 </details>
@@ -456,50 +574,91 @@ Complete list of policies available through the `SSL_POLICY` environment variabl
 </details>
 </br>
 
-Note that the `Mozilla-Old` policy should use a 1024 bits DH key for compatibility but this container provides a 4096 bits key. The [Diffie-Hellman Groups](#diffie-hellman-groups) section details different methods of bypassing this, either globally or per virtual-host.
-
 The default behavior for the proxy when port 80 and 443 are exposed is as follows:
 
 - If a virtual host has a usable cert, port 80 will redirect to 443 for that virtual host so that HTTPS is always preferred when available.
-- If the virtual host does not have a usable cert, but `default.crt` and `default.key` exist, those will be used as the virtual host's certificate and the client browser will receive a 500 error.
-- If the virtual host does not have a usable cert, and `default.crt` and `default.key` do not exist, TLS negotiation will fail (see [Missing Certificate](#missing-certificate) below).
+- If the virtual host does not have a usable cert, but `default.crt` and `default.key` exist, those will be used as the virtual host's certificate.
+- If the virtual host does not have a usable cert, and `default.crt` and `default.key` do not exist, or if the virtual host is configured not to trust the default certificate, SSL handshake will be rejected (see [Default and Missing Certificate](#default-and-missing-certificate) below).
+
+The redirection from HTTP to HTTPS use by default a [`301`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/301) response for every HTTP methods (except `CONNECT` and `TRACE` which are disabled on nginx). If you wish to use a custom redirection response for the `OPTIONS`, `POST`, `PUT`, `PATCH` and `DELETE` HTTP methods, you can either do it globally with the environment variable `NON_GET_REDIRECT` on the proxy container or per virtual host with the `com.github.nginx-proxy.nginx-proxy.non-get-redirect` label on proxied containers. Valid values are [`307`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/307) and [`308`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/308).
 
 To serve traffic in both SSL and non-SSL modes without redirecting to SSL, you can include the environment variable `HTTPS_METHOD=noredirect` (the default is `HTTPS_METHOD=redirect`). You can also disable the non-SSL site entirely with `HTTPS_METHOD=nohttp`, or disable the HTTPS site with `HTTPS_METHOD=nohttps`. `HTTPS_METHOD` can be specified on each container for which you want to override the default behavior or on the proxy container to set it globally. If `HTTPS_METHOD=noredirect` is used, Strict Transport Security (HSTS) is disabled to prevent HTTPS users from being redirected by the client. If you cannot get to the HTTP site after changing this setting, your browser has probably cached the HSTS policy and is automatically redirecting you back to HTTPS. You will need to clear your browser's HSTS cache or use an incognito window / different browser.
 
 By default, [HTTP Strict Transport Security (HSTS)](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Strict-Transport-Security) is enabled with `max-age=31536000` for HTTPS sites. You can disable HSTS with the environment variable `HSTS=off` or use a custom HSTS configuration like `HSTS=max-age=31536000; includeSubDomains; preload`.
 
-_WARNING_: HSTS will force your users to visit the HTTPS version of your site for the `max-age` time - even if they type in `http://` manually. The only way to get to an HTTP site after receiving an HSTS response is to clear your browser's HSTS cache.
+> [!WARNING]
+> HSTS will force your users to visit the HTTPS version of your site for the max-age time - even if they type in http:// manually. The only way to get to an HTTP site after receiving an HSTS response is to clear your browser's HSTS cache.
 
-### Missing Certificate
+### Default and Missing Certificate
 
-If HTTPS is enabled for a virtual host but its certificate is missing, nginx-proxy will configure nginx to use the default certificate (`default.crt` with `default.key`) and return a 500 error.
+If no matching certificate is found for a given virtual host, nginx-proxy will configure nginx to use the default certificate (`default.crt` with `default.key`).
 
-If the default certificate is also missing, nginx-proxy will configure nginx to accept HTTPS connections but fail the TLS negotiation. Client browsers will render a TLS error page. As of March 2023, web browsers display the following error messages:
+If the default certificate is also missing, nginx-proxy will:
 
-- Chrome:
+- force enable HTTP; i.e. `HTTPS_METHOD` will switch to `noredirect` if it was set to `nohttp` or `redirect`. If this switch to HTTP is not wanted set `ENABLE_HTTP_ON_MISSING_CERT=false` (default is `true`).
+- configure nginx to reject the SSL handshake for this vhost. Client browsers will render a TLS error page. As of October 2024, web browsers display the following error messages:
 
-  > This site can't provide a secure connection
-  >
-  > example.test sent an invalid response.
-  >
-  > Try running Connectivity Diagnostics.
-  >
-  > `ERR_SSL_PROTOCOL_ERROR`
+#### Chrome:
 
-- Firefox:
+> This site can’t be reached
+>
+> The web page at https://example.test/ might be temporarily down or it may have moved permanently to a new web address.
+>
+> `ERR_SSL_UNRECOGNIZED_NAME_ALERT`
 
-  > Secure Connection Failed
-  >
-  > An error occurred during a connection to example.test.
-  > Peer reports it experienced an internal error.
-  >
-  > Error code: `SSL_ERROR_INTERNAL_ERROR_ALERT` "TLS error".
+#### Firefox:
+
+> Secure Connection Failed
+>
+> An error occurred during a connection to example.test. SSL peer has no certificate for the requested DNS name.
+>
+> Error code: `SSL_ERROR_UNRECOGNIZED_NAME_ALERT`
+>
+> - The page you are trying to view cannot be shown because the authenticity of the received data could not be verified.
+> - Please contact the website owners to inform them of this problem.
+
+#### Safari:
+
+> Safari Can't Open the Page
+>
+> Safari can't open the page "https://example.test" because Safari can't establish a secure connection to the server "example.test".
+
+> [!NOTE]
+> Prior to version `1.7`, nginx-proxy never trusted the default certificate: when the default certificate was present, virtual hosts that did not have a usable per-virtual-host cert used the default cert but always returned a 500 error over HTTPS. If you want to restore this behaviour, you can do it globally by setting the enviroment variable `TRUST_DEFAULT_CERT` to `false` on the proxy container, or per-virtual-host by setting the label `com.github.nginx-proxy.nginx-proxy.trust-default-cert`to `false` on a proxied container.
+
+### Certificate selection
+
+Summarizing all the above informations, nginx-proxy will select the certificate for a given virtual host using the following sequence:
+
+1. if `CERT_NAME` is used, nginx-proxy will use the corresponding certificate if it exists (eg `foor.bar.com` → `CERT_NAME.crt`), or disable HTTPS for this virtual host if it does not. See [SAN certificates](#san-certificates).
+2. if a certificate exactly matching the virtual host hostname exist, nginx-proxy will use it (eg `foo.bar.com` → `foo.bar.com.crt`).
+3. if the virtual host hostname is a subdomain (eg `foo.bar.com` but not `bar.com`) and a certificate exactly matching its parent domain exist , nginx-proxy will use it (eg `foor.bar.com` → `bar.com.crt`). See [wildcard certificates](#wildcard-certificates).
+4. if the default certificate (`default.crt`) exist and is trusted, nginx-proxy will use it (eg `foor.bar.com` → `default.crt`). See [default and missing certificate](#default-and-missing-certificate).
+5. if the default certificate does not exist or isn't trusted, nginx-proxy will disable HTTPS for this virtual host (eg `foor.bar.com` → no HTTPS).
+
+> [!IMPORTANT]
+> Using `CERT_NAME` take precedence over the certificate selection process, meaning nginx-proxy will not auto select a correct certificate in step 2 trough 5 if `CERT_NAME` was used with an incorrect value or without corresponding certificate.
+
+> [!NOTE]
+> In all the above cases, if a private key file corresponding to the selected certificate (eg `foo.bar.com.key` for the `foor.bar.com.crt` certificate) does not exist, HTTPS will be disabled for this virtual host.
 
 ⬆️ [back to table of contents](#table-of-contents)
 
 ## IPv6 Support
 
-You can activate the IPv6 support for the nginx-proxy container by passing the value `true` to the `ENABLE_IPV6` environment variable:
+### IPv6 Docker Networks
+
+nginx-proxy support both IPv4 and IPv6 on Docker networks.
+
+By default nginx-proxy will prefer IPv4: if a container can be reached over both IPv4 and IPv6, only its IPv4 will be used.
+
+This can be changed globally by setting the environment variable `PREFER_IPV6_NETWORK` to `true` on the proxy container: with this setting the proxy will only use IPv6 for containers that can be reached over both IPv4 and IPv6.
+
+IPv4 and IPv6 are never both used at the same time on containers that use both IP stacks to avoid artificially inflating the effective round robin weight of those containers.
+
+### Listening on IPv6
+
+By default the nginx-proxy container will only listen on IPv4. To enable listening on IPv6 too, set the `ENABLE_IPV6` environment variable to `true`:
 
 ```console
 docker run -d -p 80:80 -e ENABLE_IPV6=true -v /var/run/docker.sock:/tmp/docker.sock:ro nginxproxy/nginx-proxy
@@ -529,7 +688,7 @@ More reading on the potential TCP head-of-line blocking issue with HTTP/2: [HTTP
 
 ### HTTP/3 support
 
-> **Warning**
+> [!WARNING]
 > HTTP/3 support [is still considered experimental in nginx](https://www.nginx.com/blog/binary-packages-for-preview-nginx-quic-http3-implementation/) and as such is considered experimental in nginx-proxy too and is disabled by default. [Feedbacks for the HTTP/3 support are welcome in #2271.](https://github.com/nginx-proxy/nginx-proxy/discussions/2271)
 
 HTTP/3 use the QUIC protocol over UDP (unlike HTTP/1.1 and HTTP/2 which work over TCP), so if you want to use HTTP/3 you'll have to explicitely publish the 443/udp port of the proxy in addition to the 443/tcp port:
@@ -581,7 +740,7 @@ If you need to configure Nginx beyond what is possible using environment variabl
 
 If you want to replace the default proxy settings for the nginx container, add a configuration file at `/etc/nginx/proxy.conf`. A file with the default settings would look like this:
 
-```Nginx
+```nginx
 # HTTP 1.1 support
 proxy_http_version 1.1;
 proxy_set_header Host $http_host;
@@ -599,7 +758,8 @@ proxy_set_header X-Original-URI $request_uri;
 proxy_set_header Proxy "";
 ```
 
-**_NOTE_**: If you provide this file it will replace the defaults; you may want to check the [nginx.tmpl](https://github.com/nginx-proxy/nginx-proxy/blob/main/nginx.tmpl) file to make sure you have all of the needed options.
+> [!IMPORTANT]
+> If you provide this file it will replace the defaults; you may want to check the [nginx.tmpl](https://github.com/nginx-proxy/nginx-proxy/blob/main/nginx.tmpl) file to make sure you have all of the needed options.
 
 ### Proxy-wide
 
@@ -615,57 +775,227 @@ RUN { \
     } > /etc/nginx/conf.d/my_proxy.conf
 ```
 
-Or it can be done by mounting in your custom configuration in your `docker run` command:
+Or it can be done by mounting in your custom configuration in your `docker run` command or your Docker Compose file:
+
+```nginx
+# content of the my_proxy.conf file
+server_tokens off;
+client_max_body_size 100m;
+```
+
+<details>
+  <summary>Docker CLI</summary>
 
 ```console
-docker run -d -p 80:80 -p 443:443 -v /path/to/my_proxy.conf:/etc/nginx/conf.d/my_proxy.conf:ro -v /var/run/docker.sock:/tmp/docker.sock:ro nginxproxy/nginx-proxy
+docker run --detach \
+  --name nginx-proxy \
+  --publish 80:80 \
+  --publish 443:443 \
+  --volume /var/run/docker.sock:/tmp/docker.sock:ro \
+  --volume /path/to/my_proxy.conf:/etc/nginx/conf.d/my_proxy.conf:ro \
+  nginxproxy/nginx-proxy
 ```
+
+</details>
+
+<details>
+  <summary>Docker Compose file</summary>
+
+```yaml
+services:
+  proxy:
+    image: nginxproxy/nginx-proxy
+    container_name: nginx-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - /path/to/my_proxy.conf:/etc/nginx/conf.d/my_proxy.conf:ro
+```
+
+</details>
 
 ### Per-VIRTUAL_HOST
 
-To add settings on a per-`VIRTUAL_HOST` basis, add your configuration file under `/etc/nginx/vhost.d`. Unlike in the proxy-wide case, which allows multiple config files with any name ending in `.conf`, the per-`VIRTUAL_HOST` file must be named exactly after the `VIRTUAL_HOST`.
+To add settings on a per-`VIRTUAL_HOST` basis, add your configuration file under `/etc/nginx/vhost.d`. Unlike in the proxy-wide case, which allows multiple config files with any name ending in `.conf`, the per-`VIRTUAL_HOST` file must be named exactly after the `VIRTUAL_HOST`, or if `VIRTUAL_HOST` is a regex, after the sha1 hash of the regex.
 
 In order to allow virtual hosts to be dynamically configured as backends are added and removed, it makes the most sense to mount an external directory as `/etc/nginx/vhost.d` as opposed to using derived images or mounting individual configuration files.
 
 For example, if you have a virtual host named `app.example.com`, you could provide a custom configuration for that host as follows:
 
-```console
-docker run -d -p 80:80 -p 443:443 -v /path/to/vhost.d:/etc/nginx/vhost.d:ro -v /var/run/docker.sock:/tmp/docker.sock:ro nginxproxy/nginx-proxy
-{ echo 'server_tokens off;'; echo 'client_max_body_size 100m;'; } > /path/to/vhost.d/app.example.com
+1. create your virtual host config file:
+
+```nginx
+# content of the custom-vhost-config.conf file
+client_max_body_size 100m;
 ```
 
-If you are using multiple hostnames for a single container (e.g. `VIRTUAL_HOST=example.com,www.example.com`), the virtual host configuration file must exist for each hostname. If you would like to use the same configuration for multiple virtual host names, you can use a symlink:
+2. mount it to `/etc/nginx/vhost.d/app.example.com`:
+<details>
+  <summary>Docker CLI</summary>
 
 ```console
-{ echo 'server_tokens off;'; echo 'client_max_body_size 100m;'; } > /path/to/vhost.d/www.example.com
-ln -s /path/to/vhost.d/www.example.com /path/to/vhost.d/example.com
+docker run --detach \
+  --name nginx-proxy \
+  --publish 80:80 \
+  --publish 443:443 \
+  --volume /var/run/docker.sock:/tmp/docker.sock:ro \
+  --volume /path/to/custom-vhost-config.conf:/etc/nginx/vhost.d/app.example.com:ro \
+  nginxproxy/nginx-proxy
 ```
+
+</details>
+
+<details>
+  <summary>Docker Compose file</summary>
+
+```yaml
+services:
+  proxy:
+    image: nginxproxy/nginx-proxy
+    container_name: nginx-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - /path/to/custom-vhost-config.conf:/etc/nginx/vhost.d/app.example.com:ro
+```
+
+</details>
+
+If you are using multiple hostnames for a single container (e.g. `VIRTUAL_HOST=example.com,www.example.com`), the virtual host configuration file must exist for each hostname:
+
+<details>
+  <summary>Docker CLI</summary>
+
+```console
+docker run --detach \
+  --name nginx-proxy \
+  --publish 80:80 \
+  --publish 443:443 \
+  --volume /path/to/custom-vhost-config.conf:/etc/nginx/vhost.d/example.com:ro \
+  --volume /path/to/custom-vhost-config.conf:/etc/nginx/vhost.d/www.example.com:ro \
+  --volume /var/run/docker.sock:/tmp/docker.sock:ro \
+  nginxproxy/nginx-proxy
+```
+
+</details>
+
+<details>
+  <summary>Docker Compose file</summary>
+
+```yaml
+services:
+  proxy:
+    image: nginxproxy/nginx-proxy
+    container_name: nginx-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - /path/to/custom-vhost-config.conf:/etc/nginx/vhost.d/example.com:ro
+      - /path/to/custom-vhost-config.conf:/etc/nginx/vhost.d/www.example.com:ro
+```
+
+</details>
 
 ### Per-VIRTUAL_HOST default configuration
 
-If you want most of your virtual hosts to use a default single configuration and then override on a few specific ones, add those settings to the `/etc/nginx/vhost.d/default` file. This file will be used on any virtual host which does not have a `/etc/nginx/vhost.d/{VIRTUAL_HOST}` file associated with it.
+If you want most of your virtual hosts to use a default single configuration and then override on a few specific ones, add those settings to the `/etc/nginx/vhost.d/default` file. This file will be used on any virtual host which does not have a [per-VIRTUAL_HOST file](#per-virtual_host) associated with it.
 
 ### Per-VIRTUAL_HOST location configuration
 
-To add settings to the "location" block on a per-`VIRTUAL_HOST` basis, add your configuration file under `/etc/nginx/vhost.d` just like the previous section except with the suffix `_location`.
+To add settings to the "location" block on a per-`VIRTUAL_HOST` basis, add your configuration file under `/etc/nginx/vhost.d` just like the per-`VIRTUAL_HOST` section except with the suffix `_location` (like this section, if your `VIRTUAl_HOST` is a regex, use the sha1 hash of the regex instead, with the suffix `_location` appended).
 
 For example, if you have a virtual host named `app.example.com` and you have configured a proxy_cache `my-cache` in another custom file, you could tell it to use a proxy cache as follows:
 
-```console
-docker run -d -p 80:80 -p 443:443 -v /path/to/vhost.d:/etc/nginx/vhost.d:ro -v /var/run/docker.sock:/tmp/docker.sock:ro nginxproxy/nginx-proxy
-{ echo 'proxy_cache my-cache;'; echo 'proxy_cache_valid  200 302  60m;'; echo 'proxy_cache_valid  404 1m;' } > /path/to/vhost.d/app.example.com_location
+1. create your virtual host location config file:
+
+```nginx
+# content of the custom-vhost-location-config.conf file
+proxy_cache my-cache;
+proxy_cache_valid 200 302 60m;
+proxy_cache_valid 404 1m;
 ```
 
-If you are using multiple hostnames for a single container (e.g. `VIRTUAL_HOST=example.com,www.example.com`), the virtual host configuration file must exist for each hostname. If you would like to use the same configuration for multiple virtual host names, you can use a symlink:
+2. mount it to `/etc/nginx/vhost.d/app.example.com_location`:
+
+<details>
+  <summary>Docker CLI</summary>
 
 ```console
-{ echo 'proxy_cache my-cache;'; echo 'proxy_cache_valid  200 302  60m;'; echo 'proxy_cache_valid  404 1m;' } > /path/to/vhost.d/app.example.com_location
-ln -s /path/to/vhost.d/www.example.com /path/to/vhost.d/example.com
+docker run --detach \
+  --name nginx-proxy \
+  --publish 80:80 \
+  --publish 443:443 \
+  --volume /var/run/docker.sock:/tmp/docker.sock:ro \
+  --volume /path/to/custom-vhost-location-config.conf:/etc/nginx/vhost.d/app.example.com_location:ro \
+  nginxproxy/nginx-proxy
 ```
+
+</details>
+
+<details>
+  <summary>Docker Compose file</summary>
+
+```yaml
+services:
+  proxy:
+    image: nginxproxy/nginx-proxy
+    container_name: nginx-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - /path/to/custom-vhost-location-config.conf:/etc/nginx/vhost.d/app.example.com_location:ro
+```
+
+</details>
+
+If you are using multiple hostnames for a single container (e.g. `VIRTUAL_HOST=example.com,www.example.com`), the virtual host configuration file must exist for each hostname:
+
+<details>
+  <summary>Docker CLI</summary>
+
+```console
+docker run --detach \
+  --name nginx-proxy \
+  --publish 80:80 \
+  --publish 443:443 \
+  --volume /var/run/docker.sock:/tmp/docker.sock:ro \
+  --volume /path/to/custom-vhost-location-config.conf:/etc/nginx/vhost.d/example.com_location:ro \
+  --volume /path/to/custom-vhost-location-config.conf:/etc/nginx/vhost.d/www.example.com_location:ro \
+  nginxproxy/nginx-proxy
+```
+
+</details>
+
+<details>
+  <summary>Docker Compose file</summary>
+
+```yaml
+services:
+  proxy:
+    image: nginxproxy/nginx-proxy
+    container_name: nginx-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - /path/to/custom-vhost-location-config.conf:/etc/nginx/vhost.d/example.com_location:ro
+      - /path/to/custom-vhost-location-config.conf:/etc/nginx/vhost.d/www.example.com_location:ro
+```
+
+</details>
 
 ### Per-VIRTUAL_HOST location default configuration
 
-If you want most of your virtual hosts to use a default single `location` block configuration and then override on a few specific ones, add those settings to the `/etc/nginx/vhost.d/default_location` file. This file will be used on any virtual host which does not have a `/etc/nginx/vhost.d/{VIRTUAL_HOST}_location` file associated with it.
+If you want most of your virtual hosts to use a default single `location` block configuration and then override on a few specific ones, add those settings to the `/etc/nginx/vhost.d/default_location` file. This file will be used on any virtual host which does not have a [Per-VIRTUAL_HOST location file](#per-virtual_host-location-configuration) associated with it.
 
 ### Overriding `location` blocks
 
@@ -675,7 +1005,7 @@ The `${VIRTUAL_HOST}_${PATH_HASH}_location`, `${VIRTUAL_HOST}_location`, and `de
 /etc/nginx/vhost.d/${VIRTUAL_HOST}_${PATH_HASH}_location_override
 ```
 
-where `${VIRTUAL_HOST}` is the name of the virtual host (the `VIRTUAL_HOST` environment variable) and `${PATH_HASH}` is the SHA-1 hash of the path, as [described above](#per-virtual_path-location-configuration).
+where `${VIRTUAL_HOST}` is the name of the virtual host (the `VIRTUAL_HOST` environment variable), or the sha1 hash of `VIRTUAL_HOST` when it's a regex, and `${PATH_HASH}` is the SHA-1 hash of the path, as [described above](#per-virtual_path-location-configuration).
 
 For convenience, the `_${PATH_HASH}` part can be omitted if the path is `/`:
 
@@ -687,7 +1017,7 @@ When an override file exists, the `location` block that is normally created by `
 
 You are responsible for providing a suitable `location` block in your override file as required for your service. By default, `nginx-proxy` uses the `VIRTUAL_HOST` name as the upstream name for your application's Docker container; see [here](#unhashed-vs-sha1-upstream-names) for details. As an example, if your container has a `VIRTUAL_HOST` value of `app.example.com`, then to override the location block for `/` you would create a file named `/etc/nginx/vhost.d/app.example.com_location_override` that contains something like this:
 
-```
+```nginx
 location / {
     proxy_pass http://app.example.com;
 }
@@ -697,13 +1027,86 @@ location / {
 
 Per virtual-host `servers_tokens` directive can be configured by passing appropriate value to the `SERVER_TOKENS` environment variable. Please see the [nginx http_core module configuration](https://nginx.org/en/docs/http/ngx_http_core_module.html#server_tokens) for more details.
 
+### Custom error page
+
+To override the default error page displayed on 50x errors, mount your custom HTML error page inside the container at `/usr/share/nginx/html/errors/50x.html`:
+
+```console
+docker run --detach \
+    --name nginx-proxy \
+    --publish 80:80 \
+    --volume /var/run/docker.sock:/tmp/docker.sock:ro \
+    --volume /path/to/error.html:/usr/share/nginx/html/errors/50x.html:ro \
+    nginxproxy/nginx-proxy
+```
+
+> [!NOTE]
+> This will not replace your own services error pages.
+
+⬆️ [back to table of contents](#table-of-contents)
+
+## TCP and UDP stream
+
+If you want to proxy non-HTTP traffic, you can use nginx's stream module. Write a configuration file and mount it inside `/etc/nginx/toplevel.conf.d`.
+
+```nginx
+# stream.conf
+stream {
+    upstream stream_backend {
+        server backend1.example.com:12345;
+        server backend2.example.com:12345;
+        server backend3.example.com:12346;
+        # ...
+    }
+    server {
+        listen     12345;
+        #TCP traffic will be forwarded to the "stream_backend" upstream group
+        proxy_pass stream_backend;
+    }
+
+    server {
+        listen     12346;
+        #TCP traffic will be forwarded to the specified server
+        proxy_pass backend.example.com:12346;
+    }
+
+    upstream dns_servers {
+        server 192.168.136.130:53;
+        server 192.168.136.131:53;
+        # ...
+    }
+    server {
+        listen     53 udp;
+        #UDP traffic will be forwarded to the "dns_servers" upstream group
+        proxy_pass dns_servers;
+    }
+    # ...
+}
+```
+
+```console
+docker run --detach \
+    --name nginx-proxy \
+    --publish 80:80 \
+    --publish 12345:12345 \
+    --publish 12346:12346 \
+    --publish 53:53:udp \
+    --volume /var/run/docker.sock:/tmp/docker.sock:ro \
+    --volume ./stream.conf:/etc/nginx/toplevel.conf.d/stream.conf:ro \
+    nginxproxy/nginx-proxy
+```
+
+> [!NOTE]
+> TCP and UDP stream are not core features of nginx-proxy, so the above is provided as an example only, without any guarantee.
+
 ⬆️ [back to table of contents](#table-of-contents)
 
 ## Unhashed vs SHA1 upstream names
 
 By default the nginx configuration `upstream` blocks will use this block's corresponding hostname as a predictable name. However, this can cause issues in some setups (see [this issue](https://github.com/nginx-proxy/nginx-proxy/issues/1162)). In those cases you might want to switch to SHA1 names for the `upstream` blocks by setting the `SHA1_UPSTREAM_NAME` environment variable to `true` on the nginx-proxy container.
 
-Please note that using regular expressions in `VIRTUAL_HOST` will always result in a corresponding `upstream` block with an SHA1 name.
+> [!NOTE]
+> Using regular expressions in `VIRTUAL_HOST` will always result in a corresponding `upstream` block with an SHA1 name.
 
 ⬆️ [back to table of contents](#table-of-contents)
 
@@ -754,8 +1157,6 @@ docker run -e VIRTUAL_HOST=foo.bar.com  ...
 ## Docker Compose
 
 ```yaml
-version: "2"
-
 services:
   nginx-proxy:
     image: nginxproxy/nginx-proxy
@@ -796,7 +1197,7 @@ docker exec <nginx-proxy-instance> nginx -T
 
 Pay attention to the `upstream` definition blocks, which should look like this:
 
-```Nginx
+```nginx
 # foo.example.com
 upstream foo.example.com {
 	## Can be connected with "my_network" network
@@ -815,6 +1216,114 @@ The effective `Port` is retrieved by order of precedence:
 1. From the `VIRTUAL_PORT` environment variable
 1. From the container's exposed port if there is only one
 1. From the default port 80 when none of the above methods apply
+
+### Debug endpoint
+
+The debug endpoint can be enabled:
+
+- globally by setting the `DEBUG_ENDPOINT` environment variable to `true` on the nginx-proxy container.
+- per container by setting the `com.github.nginx-proxy.nginx-proxy.debug-endpoint` label to `true` on a proxied container.
+
+Enabling it will expose the endpoint at `<your.domain.tld>/nginx-proxy-debug`.
+
+Querying the debug endpoint will show the global config, along with the virtual host and per path configs in JSON format.
+
+```yaml
+services:
+  nginx-proxy:
+    image: nginxproxy/nginx-proxy
+    ports:
+      - "80:80"
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+    environment:
+      DEBUG_ENDPOINT: "true"
+
+  test:
+    image: nginx
+    environment:
+      VIRTUAL_HOST: test.nginx-proxy.tld
+```
+
+(on the CLI, using [`jq`](https://jqlang.github.io/jq/) to format the output of `curl` is recommended)
+
+```console
+curl -s -H "Host: test.nginx-proxy.tld" localhost/nginx-proxy-debug | jq
+```
+
+```json
+{
+  "global": {
+    "acme_http_challenge": "true",
+    "default_cert_ok": false,
+    "default_host": null,
+    "default_root_response": "404",
+    "enable_access_log": true,
+    "enable_debug_endpoint": "true",
+    "enable_http2": "true",
+    "enable_http3": "false",
+    "enable_http_on_missing_cert": "true",
+    "enable_ipv6": false,
+    "enable_json_logs": false,
+    "external_http_port": "80",
+    "external_https_port": "443",
+    "hsts": "max-age=31536000",
+    "https_method": "redirect",
+    "log_format": null,
+    "log_format_escape": null,
+    "nginx_proxy_version": "1.6.3",
+    "resolvers": "127.0.0.11",
+    "sha1_upstream_name": false,
+    "ssl_policy": "Mozilla-Intermediate",
+    "trust_downstream_proxy": true
+  },
+  "request": {
+    "host": "test.nginx-proxy.tld",
+    "http2": "",
+    "http3": "",
+    "https": "",
+    "ssl_cipher": "",
+    "ssl_protocol": ""
+  },
+  "vhost": {
+    "acme_http_challenge_enabled": true,
+    "acme_http_challenge_legacy": false,
+    "cert": "",
+    "cert_ok": false,
+    "default": false,
+    "enable_debug_endpoint": true,
+    "hostname": "test.nginx-proxy.tld",
+    "hsts": "max-age=31536000",
+    "http2_enabled": true,
+    "http3_enabled": false,
+    "https_method": "noredirect",
+    "is_regexp": false,
+    "paths": {
+      "/": {
+        "dest": "",
+        "keepalive": "disabled",
+        "network_tag": "external",
+        "ports": {
+          "legacy": [
+            {
+              "Name": "wip-test-1"
+            }
+          ]
+        },
+        "proto": "http",
+        "upstream": "test.nginx-proxy.tld"
+      }
+    },
+    "server_tokens": "",
+    "ssl_policy": "",
+    "upstream_name": "test.nginx-proxy.tld",
+    "vhost_root": "/var/www/public"
+  }
+}
+```
+
+> [!WARNING]
+> Please be aware that the debug endpoint work by rendering the JSON response straight to the nginx configuration in plaintext. nginx has an upper limit on the size of the configuration files it can parse, so only activate it when needed, and preferably on a per container basis if your setup has a large number of virtual hosts.
 
 ⬆️ [back to table of contents](#table-of-contents)
 

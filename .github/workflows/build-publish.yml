@@ -25,6 +25,7 @@ jobs:
       matrix:
         base: [alpine, debian]
     runs-on: ubuntu-latest
+    if: (github.event_name == 'schedule' && github.repository == 'nginx-proxy/nginx-proxy') || (github.event_name != 'schedule')
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -81,7 +82,7 @@ jobs:
 
       - name: Build and push the image
         id: docker_build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.${{ matrix.base }}

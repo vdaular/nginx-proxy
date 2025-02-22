@@ -1,12 +1,15 @@
-version: "2"
-
 services:
+  nginx-proxy:
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - ${PYTEST_MODULE_PATH}/certs:/etc/nginx/certs:ro
+
   web:
     image: web
     expose:
       - "80"
     environment:
-      WEB_PORTS: 80
+      WEB_PORTS: "80"
       VIRTUAL_HOST: web.nginx-proxy.tld
 
   web-server-tokens-off:
@@ -14,17 +17,6 @@ services:
     expose:
       - "80"
     environment:
-      WEB_PORTS: 80
+      WEB_PORTS: "80"
       VIRTUAL_HOST: web-server-tokens-off.nginx-proxy.tld
       SERVER_TOKENS: "off"
-
-  sut:
-    image: nginxproxy/nginx-proxy:test
-    volumes:
-      - /var/run/docker.sock:/tmp/docker.sock:ro
-      - ./certs/web.nginx-proxy.tld.crt:/etc/nginx/certs/default.crt:ro
-      - ./certs/web.nginx-proxy.tld.key:/etc/nginx/certs/default.key:ro
-      - ./certs/web.nginx-proxy.tld.crt:/etc/nginx/certs/web.nginx-proxy.tld.crt:ro
-      - ./certs/web.nginx-proxy.tld.key:/etc/nginx/certs/web.nginx-proxy.tld.key:ro
-      - ./certs/web-server-tokens-off.nginx-proxy.tld.crt:/etc/nginx/certs/web-server-tokens-off.nginx-proxy.tld.crt:ro
-      - ./certs/web-server-tokens-off.nginx-proxy.tld.key:/etc/nginx/certs/web-server-tokens-off.nginx-proxy.tld.key:ro

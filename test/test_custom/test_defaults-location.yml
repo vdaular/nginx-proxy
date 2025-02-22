@@ -1,19 +1,16 @@
-version: "2"
-
 services:
   nginx-proxy:
-    image: nginxproxy/nginx-proxy:test
     volumes:
       - /var/run/docker.sock:/tmp/docker.sock:ro
-      - ./my_custom_proxy_settings.conf:/etc/nginx/vhost.d/default_location:ro
-      - ./my_custom_proxy_settings_bar.conf:/etc/nginx/vhost.d/web3.nginx-proxy.example_location:ro
+      - ${PYTEST_MODULE_PATH}/my_custom_proxy_settings_f00.conf:/etc/nginx/vhost.d/default_location:ro
+      - ${PYTEST_MODULE_PATH}/my_custom_proxy_settings_bar.conf:/etc/nginx/vhost.d/web3.nginx-proxy.example_location:ro
 
   web1:
     image: web
     expose:
       - "81"
     environment:
-      WEB_PORTS: 81
+      WEB_PORTS: "81"
       VIRTUAL_HOST: web1.nginx-proxy.example
 
   web2:
@@ -21,7 +18,7 @@ services:
     expose:
       - "82"
     environment:
-      WEB_PORTS: 82
+      WEB_PORTS: "82"
       VIRTUAL_HOST: web2.nginx-proxy.example
 
   web3:
@@ -29,5 +26,5 @@ services:
     expose:
       - "83"
     environment:
-      WEB_PORTS: 83
+      WEB_PORTS: "83"
       VIRTUAL_HOST: web3.nginx-proxy.example

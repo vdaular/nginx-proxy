@@ -1,5 +1,3 @@
-version: "2"
-
 services:
   web2:
     image: web
@@ -9,9 +7,3 @@ services:
       WEB_PORTS: "82"
       VIRTUAL_HOST: "web2.nginx-proxy.tld"
       HTTPS_METHOD: nohttp
-
-  sut:
-    image: nginxproxy/nginx-proxy:test
-    volumes:
-      - /var/run/docker.sock:/tmp/docker.sock:ro
-      - ./certs:/etc/nginx/certs:ro

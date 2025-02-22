@@ -1,6 +1,6 @@
 [![Test](https://github.com/nginx-proxy/nginx-proxy/actions/workflows/test.yml/badge.svg)](https://github.com/nginx-proxy/nginx-proxy/actions/workflows/test.yml)
 [![GitHub release](https://img.shields.io/github/v/release/nginx-proxy/nginx-proxy)](https://github.com/nginx-proxy/nginx-proxy/releases)
-![nginx 1.26.0](https://img.shields.io/badge/nginx-1.26.0-brightgreen.svg)
+[![nginx 1.27.4](https://img.shields.io/badge/nginx-1.27.4-brightgreen.svg?logo=nginx)](https://nginx.org/en/CHANGES)
 [![Docker Image Size](https://img.shields.io/docker/image-size/nginxproxy/nginx-proxy?sort=semver)](https://hub.docker.com/r/nginxproxy/nginx-proxy "Click to view the image on Docker Hub")
 [![Docker stars](https://img.shields.io/docker/stars/nginxproxy/nginx-proxy.svg)](https://hub.docker.com/r/nginxproxy/nginx-proxy "DockerHub")
 [![Docker pulls](https://img.shields.io/docker/pulls/nginxproxy/nginx-proxy.svg)](https://hub.docker.com/r/nginxproxy/nginx-proxy "DockerHub")
@@ -18,7 +18,7 @@ docker run --detach \
     --name nginx-proxy \
     --publish 80:80 \
     --volume /var/run/docker.sock:/tmp/docker.sock:ro \
-    nginxproxy/nginx-proxy:1.5
+    nginxproxy/nginx-proxy:1.6
 ```
 
 Then start any containers (here an nginx container) you want proxied with an env var `VIRTUAL_HOST=subdomain.yourdomain.com`
@@ -48,7 +48,7 @@ The nginx-proxy images are available in two flavors.
 This image is based on the nginx:mainline image, itself based on the debian slim image.
 
 ```console
-docker pull nginxproxy/nginx-proxy:1.5
+docker pull nginxproxy/nginx-proxy:1.6
 ```
 
 #### Alpine based version (`-alpine` suffix)
@@ -56,15 +56,22 @@ docker pull nginxproxy/nginx-proxy:1.5
 This image is based on the nginx:alpine image.
 
 ```console
-docker pull nginxproxy/nginx-proxy:1.5-alpine
+docker pull nginxproxy/nginx-proxy:1.6-alpine
 ```
 
-#### :warning: a note on `latest` and `alpine`:
-
-It is not recommended to use the `latest` (`nginxproxy/nginx-proxy`, `nginxproxy/nginx-proxy:latest`) or `alpine` (`nginxproxy/nginx-proxy:alpine`) tag for production setups.
-
-[Those tags point](https://hub.docker.com/r/nginxproxy/nginx-proxy/tags) to the latest commit in the `main` branch. They do not carry any promise of stability, and using them will probably put your nginx-proxy setup at risk of experiencing uncontrolled updates to non backward compatible versions (or versions with breaking changes). You should always specify the version you want to use explicitly to ensure your setup doesn't break when the image is updated.
+> [!IMPORTANT]
+>
+> #### A note on `latest` and `alpine`:
+>
+> It is not recommended to use the `latest` (`nginxproxy/nginx-proxy`, `nginxproxy/nginx-proxy:latest`) or `alpine` (`nginxproxy/nginx-proxy:alpine`) tag for production setups.
+>
+> [Those tags point](https://hub.docker.com/r/nginxproxy/nginx-proxy/tags) to the latest commit in the `main` branch. They do not carry any promise of stability, and using them will probably put your nginx-proxy setup at risk of experiencing uncontrolled updates to non backward compatible versions (or versions with breaking changes). You should always specify the version you want to use explicitly to ensure your setup doesn't break when the image is updated.
 
 ### Additional documentation
 
 Please check the [docs section](https://github.com/nginx-proxy/nginx-proxy/tree/main/docs).
+
+### Powered by 
+
+[![GoLand logo](https://resources.jetbrains.com/storage/products/company/brand/logos/GoLand_icon.svg)](https://www.jetbrains.com/go/)
+[![PyCharm logo](https://resources.jetbrains.com/storage/products/company/brand/logos/PyCharm_icon.svg)](https://www.jetbrains.com/pycharm/)
